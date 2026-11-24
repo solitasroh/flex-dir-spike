@@ -124,7 +124,7 @@ jobs:
           chmod +x ~/Downloads/*.AppImage
           ls -la ~/Downloads
       - name: fd-check.sh 해시 (브라이언 확인표 부록과 같아야 한다)
-        run: sha256sum -c qa/SHA256SUMS
+        run: cd qa && sha256sum -c SHA256SUMS
       - name: prepare
         run: xvfb-run -a -s "-screen 0 1920x1080x24" bash qa/fd-check.sh prepare
       - name: perf A
