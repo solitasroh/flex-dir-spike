@@ -1,0 +1,39 @@
+#!/bin/sh
+# 시험 앱 B (Slint · Qt 백엔드) AppImage 진입점. build-appimage.sh 가 --custom-apprun 으로 넣는다.
+# APPIMAGE_EXTRACT_AND_RUN=1 (fd-check.sh 기본) 에서도 같은 경로로 돈다 — $APPDIR 은 풀린 임시 폴더다.
+HERE="$(dirname "$(readlink -f "$0")")"
+export APPDIR="${APPDIR:-$HERE}"
+
+# linuxdeploy-plugin-qt 등이 넣은 훅 (qt.conf·플러그인 경로)
+for hook in "$HERE"/apprun-hooks/*.sh; do
+  [ -f "$hook" ] && . "$hook"
+done
+
+# ── 한글 입력기 (L2) ─────────────────────────────────────────────────────────────
+# 번들된 Qt 입력 플러그인은 빌드 기계(ubuntu-22.04)의 Qt6 에 있던 것뿐이다: ibus, compose.
+# 22.04 에는 fcitx5 의 Qt6 프런트엔드 패키지가 없다 → QT_IM_MODULE=fcitx/fcitx5 이면 Qt 가 플러그인을 못 찾아
+# 한글이 아예 안 들어간다. fcitx5 는 ibus 호환 D-Bus 프런트엔드(ibusfrontend 애드온)를 기본으로 켜 두므로
+# Qt 의 ibus 플러그인으로 붙인다. 원래 값은 FD_SPIKE_QT_IM_MODULE_ORIG 로 남겨 events.log 에 기록된다.
+IMC="$HERE/usr/plugins/platforminputcontexts"
+case "${QT_IM_MODULE:-}" in
+  fcitx|fcitx5)
+    if ! ls "$IMC"/libfcitx5platforminputcontextplugin*.so >/dev/null 2>&1 \
+       && ! ls "$IMC"/libfcitxplatforminputcontextplugin*.so >/dev/null 2>&1; then
+      export FD_SPIKE_QT_IM_MODULE_ORIG="$QT_IM_MODULE"
+      export QT_IM_MODULE=ibus
+    fi
+    ;;
+  "")
+    # GNOME Wayland 는 QT_IM_MODULE 을 비워 두기도 한다. 번들 Qt 6.2 는 text-input-v3 를 몰라
+    # 이 경우 입력기가 안 붙는다 → 입력기 데몬이 떠 있으면 ibus 로 붙인다.
+    if [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+      if command -v pgrep >/dev/null 2>&1 && pgrep -x 'ibus-daemon|fcitx5|fcitx' >/dev/null 2>&1; then
+        export FD_SPIKE_QT_IM_MODULE_ORIG="(unset)"
+        export QT_IM_MODULE=ibus
+      fi
+    fi
+    ;;
+esac
+
+# 글꼴은 바이너리에 들어 있다 (Roboto·Pretendard 원본). 라이선스 사본: usr/share/flex-dir-spike-slint/fonts/
+exec "$HERE/usr/bin/flex-dir-spike-slint" "$@"

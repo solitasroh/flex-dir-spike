@@ -1,0 +1,169 @@
+# flex-dir 스파이크 CI — 세 OS 빌드 + Linux 설치본(AppImage) 2개 + 브라이언 fd-check.sh 로 끝까지 돌려 보기.
+# 판정은 대표님 기기에서 한다. 여기 숫자(가상 화면)는 "도는가"와 추세만 본다.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  core:
+    name: core · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core
+      - name: test (fd-core · fd-viewmodel · fd-portable · fd-host)
+        run: cargo test -p fd-core -p fd-viewmodel -p fd-portable -p fd-host
+      - name: clippy
+        run: cargo clippy -p fd-core -p fd-viewmodel -p fd-portable -p fd-host --all-targets -- -D warnings
+
+  tauri-linux:
+    name: A · Tauri · Linux AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: tauri-linux
+      - name: 시스템 패키지 (Tauri 2 Linux 전제)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev libayatana-appindicator3-dev patchelf file
+      - name: clippy · test
+        run: |
+          cargo clippy -p fd-tauri-shell --all-targets -- -D warnings
+          cargo test -p fd-tauri-shell
+      - name: AppImage
+        working-directory: apps/tauri-shell
+        run: npx --yes @tauri-apps/cli@2 build --bundles appimage --ci
+      - name: 모으기
+        run: |
+          mkdir -p dist
+          cp target/release/bundle/appimage/*.AppImage dist/
+          ls -la dist
+          sha256sum dist/*.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-tauri
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  slint-linux:
+    name: B · Slint(Qt) · Linux AppImage
+    runs-on: ubuntu-22.04
+    env:
+      QMAKE: /usr/lib/qt6/bin/qmake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: slint-linux
+      - name: 시스템 패키지 (Qt6)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-wayland libqt6svg6 libgl1-mesa-dev librsvg2-bin file desktop-file-utils libfontconfig1-dev libxkbcommon-dev
+      - name: clippy · test (winit 기본 = 단위·헤드리스 시험)
+        run: |
+          cargo clippy -p fd-slint-shell --all-targets -- -D warnings
+          cargo test -p fd-slint-shell
+      - name: build (Qt 백엔드)
+        run: cargo build --release -p fd-slint-shell --no-default-features --features qt
+      - name: AppImage
+        run: |
+          sudo apt-get install -y libfuse2 || true
+          bash apps/slint-shell/packaging/build-appimage.sh dist target/release/flex-dir-spike-slint
+          ls -la dist
+          sha256sum dist/*.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-slint
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  e2e-linux:
+    name: fd-check.sh 끝까지 (Xvfb, 추세용)
+    needs: [tauri-linux, slint-linux]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/apps
+          merge-multiple: true
+      - name: 실행 환경 (가상 화면 · 입력기 없음)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libfuse2 libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 x11-xserver-utils
+          mkdir -p ~/Downloads
+          cp "${{ runner.temp }}"/apps/*.AppImage ~/Downloads/
+          chmod +x ~/Downloads/*.AppImage
+          ls -la ~/Downloads
+      - name: fd-check.sh 해시 (브라이언 확인표 부록과 같아야 한다)
+        run: sha256sum -c qa/SHA256SUMS
+      - name: prepare
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" bash qa/fd-check.sh prepare
+      - name: perf A
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" bash qa/fd-check.sh perf A
+      - name: perf B
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" bash qa/fd-check.sh perf B
+      - name: judge (가상 화면 숫자 — 판정 아님)
+        if: always()
+        run: python3 -I qa/judge.py ~/fd-spike-test/out || true
+      - name: 기록 보기
+        if: always()
+        run: |
+          for c in A B; do
+            echo "=== $c"; tail -n 5 ~/fd-spike-test/out/$c/stdout-perf.txt || true
+            grep -c $'\tFirstItem\t' ~/fd-spike-test/out/$c/perf.log || true
+            grep -c $'\tFrame:' ~/fd-spike-test/out/$c/perf.log || true
+            awk -F'\t' '{print NF}' ~/fd-spike-test/out/$c/perf.log | sort | uniq -c || true
+            cat ~/fd-spike-test/out/$c/events.log | head -n 20 || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-out
+          path: ~/fd-spike-test/out
+
+  shells-other-os:
+    name: 시험 앱 빌드 · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: shells
+      - name: A · Tauri
+        run: cargo build -p fd-tauri-shell
+      - name: B · Slint (winit — Windows·macOS 끌어다 놓기 경로는 D4 에서 정한다)
+        run: cargo build -p fd-slint-shell

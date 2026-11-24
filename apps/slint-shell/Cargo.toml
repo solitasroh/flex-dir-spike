@@ -1,0 +1,32 @@
+[package]
+name = "fd-slint-shell"
+description = "flex-dir 스파이크 시험 앱 B — Slint (Linux 시험본은 Qt 백엔드)"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "flex-dir-spike-slint"
+path = "src/main.rs"
+
+[features]
+default = ["winit"]
+# 로컬 컴파일·단위 시험용. winit 백엔드 1.19 에는 OS 끌어다 놓기가 없다 → 목요일 시험본으로 쓰지 않는다.
+winit = ["slint/backend-winit", "slint/renderer-femtovg", "slint/renderer-software"]
+# Linux 시험본 (CI 에서만 빌드: QMAKE=/usr/lib/qt6/bin/qmake). OS 끌어다 놓기(QDrag·dropEvent)는 Qt 백엔드에만 있다.
+qt = ["slint/backend-qt"]
+
+[dependencies]
+fd-host.workspace = true
+# unstable-fontique-012: 한글 폴백(Pretendard)을 글꼴 모음에 직접 건다. Slint 1.19 는 Qt 백엔드도 parley+fontique 로
+# 글자를 배치하므로 두 백엔드에 같은 방식이 먹는다 (i-slint-backend-qt qt_window.rs FontCache).
+slint = { version = "=1.19.1", default-features = false, features = ["std", "compat-1-2", "unstable-fontique-012"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# fontique 가 libfontconfig 를 링크 대신 dlopen("libfontconfig.so.1") 하게 한다 (feature 통합).
+# 이 서버에는 fontconfig 개발 패키지가 없고, AppImage 는 어차피 시스템 libfontconfig 를 쓴다.
+fontique = { version = "=0.12.0", default-features = false, features = ["fontconfig-dlopen"] }
+
+[build-dependencies]
+slint-build = "=1.19.1"

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>시험 앱 A — Tauri</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <section class="pane" data-pane="0"></section>
+  <div class="divider"></div>
+  <section class="pane" data-pane="1"></section>
+</div>
+<template id="pane-tpl">
+  <div class="tabs"><div class="tab-list"></div><button class="tab-new" title="새 탭">+</button></div>
+  <div class="toolbar">
+    <button class="btn up" title="위로 (Backspace)">↑</button>
+    <button class="btn refresh" title="새로 고침 (F5)">⟳</button>
+    <input class="addr" spellcheck="false" autocomplete="off" aria-label="주소">
+    <button class="btn view-details" title="자세히">자세히</button>
+    <button class="btn view-icons" title="큰 아이콘">큰 아이콘</button>
+  </div>
+  <div class="header">
+    <div class="col name" data-sort="name">이름</div>
+    <div class="col modified" data-sort="modified">수정한 날짜</div>
+    <div class="col size" data-sort="size">크기</div>
+  </div>
+  <div class="list" tabindex="-1">
+    <div class="spacer"></div>
+    <div class="layer"></div>
+  </div>
+  <textarea class="sink" spellcheck="false" autocomplete="off" aria-label="목록"></textarea>
+  <div class="status"><span class="status-text"></span><span class="status-sel"></span></div>
+</template>
+<script src="app.js"></script>
+</body>
+</html>

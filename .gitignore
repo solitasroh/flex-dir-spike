@@ -1,0 +1,8 @@
+/target
+/target-*
+**/node_modules
+apps/tauri-shell/src-tauri/gen
+*.AppImage
+/dist
+apps/tauri-shell/ui/fonts/
+apps/tauri-shell/ui/icons/

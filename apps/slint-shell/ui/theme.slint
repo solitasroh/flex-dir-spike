@@ -1,0 +1,128 @@
+// 시험 앱 B 공용 정의. 색은 design.md §6 (Win11 라이트) 의 근사값 — 스파이크는 라이트 한 벌만.
+// 크기: 계약 §3 — 본문 13px(논리), 자세히 줄 24, 큰 아이콘 타일 116×140 간격 8 (VM Layout 상수와 같다).
+
+export global Theme {
+    out property <color> window-bg: #f3f3f3;
+    out property <color> pane-bg: #ffffff;
+    out property <color> chrome-bg: #f3f3f3;
+    out property <color> text: #1a1a1a;
+    out property <color> text-2: #5f5f5f;
+    out property <color> accent: #0067c0;
+    out property <color> sel-active: #cce4f7;
+    out property <color> sel-inactive: #e5e5e5;
+    out property <color> hover: #f0f0f0;
+    out property <color> border: #e5e5e5;
+    out property <color> stroke: #8a8a8a;
+    out property <color> drop-bg: #99c9ef;
+    out property <length> body: 13px;
+    out property <length> small: 12px;
+    out property <length> row-h: 24px;
+    out property <length> tile-w: 116px;
+    out property <length> tile-h: 140px;
+    out property <length> gap: 8px;
+    out property <length> tab-w: 150px;
+    out property <length> scrollbar: 14px;
+}
+
+export struct ItemData {
+    pos: int,
+    name: string,
+    is-dir: bool,
+    size: string,
+    modified: string,
+    selected: bool,
+    focused: bool,
+}
+
+// 큰 아이콘 합성 행 (열 수만큼의 항목)
+export struct IconRow {
+    items: [ItemData],
+}
+
+export struct TabData {
+    title: string,
+}
+
+// fd_host::PaneSnap 에서 그리는 데 필요한 것만
+export struct PaneState {
+    folder: string,
+    status: string,
+    loading: bool,
+    icons: bool,
+    // 0 이름 · 1 수정한 날짜 · 2 크기
+    sort-key: int,
+    descending: bool,
+    columns: int,
+    len: int,
+    focus: int,
+    renaming: int,
+    selected-count: int,
+    version: int,
+    active-tab: int,
+    // 놓기 대상 폴더 줄 (끌-1), 없으면 -1
+    drop-target: int,
+}
+
+// View → Rust. 상태는 전부 fd-host 가 든다 — 여기서는 사건만 넘긴다.
+// 끌기 동작은 정수로 주고받는다: 0 none · 1 copy · 2 move · 3 link (DragAction 은 공개 Rust 타입이 아니다).
+export global Bridge {
+    // 목록
+    callback row-down(pane: int, pos: int, selected: bool, ctrl: bool, shift: bool);
+    callback row-click(pane: int, pos: int);
+    callback row-activate(pane: int, pos: int);
+    callback empty-click(pane: int);
+    callback list-key(pane: int, text: string, ctrl: bool, shift: bool, alt: bool, meta: bool) -> bool;
+    callback typed(pane: int, text: string);
+    callback composing(pane: int, text: string);
+    callback list-focused(pane: int);
+    callback viewport(pane: int, width: length, height: length);
+    // 도구 줄·머리글
+    callback go-up(pane: int);
+    callback refresh(pane: int);
+    callback set-view(pane: int, icons: bool);
+    callback sort(pane: int, key: int);
+    // 입력칸 (kind 0 = 이름 바꾸기, 1 = 주소줄)
+    callback edit-enter(pane: int, kind: int, text: string, preedit: string);
+    callback edit-preedit(pane: int, kind: int, text: string, preedit: string);
+    callback edit-escape(pane: int, kind: int, preedit: string);
+    callback edit-focus-lost(pane: int, kind: int, text: string);
+    // 탭
+    callback tab-activate(pane: int, idx: int);
+    callback tab-new(pane: int);
+    callback tab-close(pane: int, idx: int);
+    pure callback tab-drag-data(pane: int, idx: int) -> data-transfer;
+    callback tab-can-drop(pane: int, data: data-transfer) -> bool;
+    callback tab-dropped(pane: int, data: data-transfer, x: length);
+    // 끌어다 놓기
+    pure callback drag-data(pane: int, pos: int, selected: bool, version: int) -> data-transfer;
+    callback drag-started(pane: int, data: data-transfer, shift: bool);
+    callback drag-finished(pane: int, data: data-transfer, action: int);
+    callback can-drop(pane: int, data: data-transfer, x: length, y: length, proposed: int) -> int;
+    callback dropped(pane: int, data: data-transfer, x: length, y: length, proposed: int) -> int;
+    callback drop-left(pane: int);
+    // 프레임 (자동 측정·ColdStart)
+    callback frame-tick();
+    pure callback render-probe(t: float) -> bool;
+}
+
+export component ToolButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    callback clicked;
+    height: 26px;
+    min-width: label.preferred-width + 16px;
+    border-radius: 4px;
+    background: ta.pressed ? #e0e0e0 : (ta.has-hover || root.checked) ? #e9e9e9 : transparent;
+    border-width: root.checked ? 1px : 0px;
+    border-color: Theme.border;
+    label := Text {
+        text: root.text;
+        font-size: Theme.small;
+        color: Theme.text;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}

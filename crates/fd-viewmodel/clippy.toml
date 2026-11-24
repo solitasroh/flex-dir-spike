@@ -1,0 +1,16 @@
+# G2: ViewModel 은 UI 스레드(또는 액터)에서 돈다. 저장소에 닿는 호출은 효과(Effect)로만 내보낸다.
+disallowed-methods = [
+  { path = "std::fs::read_dir", reason = "열거는 Effect::Enumerate 로 (CLAUDE.md §3)" },
+  { path = "std::fs::metadata", reason = "저장소 접근은 효과로" },
+  { path = "std::fs::rename", reason = "저장소 접근은 효과로" },
+  { path = "std::fs::copy", reason = "저장소 접근은 효과로" },
+  { path = "std::fs::read", reason = "저장소 접근은 효과로" },
+  { path = "std::fs::write", reason = "저장소 접근은 효과로" },
+  { path = "std::process::Command::new", reason = "외부 실행은 Effect::Activate 로" },
+  { path = "std::thread::sleep", reason = "UI 스레드를 멈추지 않는다" },
+  { path = "std::time::SystemTime::now", reason = "시간은 메시지로 받는다 (결정적 테스트)" },
+  { path = "std::time::Instant::now", reason = "시간은 메시지로 받는다 (결정적 테스트)" },
+]
+disallowed-types = [
+  { path = "std::fs::File", reason = "저장소 접근은 효과로" },
+]

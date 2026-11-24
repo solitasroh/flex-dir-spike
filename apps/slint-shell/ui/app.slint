@@ -1,0 +1,91 @@
+// 시험 앱 B (Slint) 창. 2분할 (계약 §3).
+// 글꼴은 원본 파일 그대로 바이너리에 넣는다 (경로 = 이 파일 기준, 저장소 assets/fonts).
+import "../../../assets/fonts/Roboto-VF.ttf";
+import "../../../assets/fonts/Pretendard-Regular.otf";
+import "../../../assets/fonts/Pretendard-SemiBold.otf";
+
+import { Theme, ItemData, IconRow, TabData, PaneState, Bridge } from "theme.slint";
+import { Pane } from "pane.slint";
+
+export { Bridge, ItemData, IconRow, TabData, PaneState }
+
+export component AppWindow inherits Window {
+    in property <string> window-title;
+    in property <PaneState> left-state;
+    in property <[ItemData]> left-details;
+    in property <[IconRow]> left-icons;
+    in property <[TabData]> left-tabs;
+    in property <PaneState> right-state;
+    in property <[ItemData]> right-details;
+    in property <[IconRow]> right-icons;
+    in property <[TabData]> right-tabs;
+    in property <int> active-pane;
+    // 프레임마다 깨어 있어야 할 때만 켠다 (ColdStart·FirstItem 측정, 자동 스크롤)
+    in property <bool> ticking: true;
+    property <duration> tick: root.ticking ? animation-tick() : 0ms;
+
+    title: root.window-title;
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 720px;
+    min-height: 420px;
+    default-font-family: "Roboto";
+    default-font-size: 13px;
+    background: Theme.window-bg;
+
+    // 매 틱 (자동 스크롤 진행). Qt 백엔드에서는 그리기 끝의 timer_event 에서, winit 에서는 루프 첫머리에서 온다.
+    changed tick => { Bridge.frame-tick(); }
+
+    public function focus-list(pane: int) {
+        if pane == 0 { left.focus-list(); } else { right.focus-list(); }
+    }
+    public function focus-address(pane: int) {
+        if pane == 0 { left.focus-address(); } else { right.focus-address(); }
+    }
+    public function reset-address(pane: int) {
+        if pane == 0 { left.reset-address(); } else { right.reset-address(); }
+    }
+    public function open-rename(pane: int, name: string, stem: int) {
+        if pane == 0 { left.open-rename(name, stem); } else { right.open-rename(name, stem); }
+    }
+    public function close-rename(pane: int) {
+        if pane == 0 { left.close-rename(); } else { right.close-rename(); }
+    }
+    public function scroll-to(pane: int, y: length) {
+        if pane == 0 { left.scroll-to(y); } else { right.scroll-to(y); }
+    }
+
+    HorizontalLayout {
+        left := Pane {
+            index: 0;
+            state: root.left-state;
+            details: root.left-details;
+            icons: root.left-icons;
+            tabs: root.left-tabs;
+            active: root.active-pane == 0;
+        }
+        Rectangle {
+            width: 1px;
+            background: Theme.border;
+        }
+        right := Pane {
+            index: 1;
+            state: root.right-state;
+            details: root.right-details;
+            icons: root.right-icons;
+            tabs: root.right-tabs;
+            active: root.active-pane == 1;
+        }
+    }
+
+    // 그리기 탐침: 맨 마지막(가장 위)에 그려지는 1px 투명 사각형. 틱이 바뀐 프레임을 그릴 때 배경 바인딩이
+    // 다시 계산되며 Rust 가 시각을 잰다 = "이 프레임을 그렸다". 렌더 알림(set_rendering_notifier)이 없는
+    // Qt 백엔드용. 렌더 알림이 되는 백엔드에서는 Rust 가 무시한다.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 1px;
+        height: 1px;
+        background: Bridge.render-probe(root.tick / 1ms) ? transparent : transparent;
+    }
+}

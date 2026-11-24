@@ -1,0 +1,698 @@
+// 한 칸 = 탭 줄 · 도구 줄 · 주소줄 · 목록(자세히/큰 아이콘) · 상태줄 (계약 §3).
+// 상태는 fd-host 가 든다. 여기서는 그리고, 사건을 Bridge 로 넘긴다.
+
+import { ListView } from "std-widgets.slint";
+import { Theme, ItemData, IconRow, TabData, PaneState, Bridge, ToolButton } from "theme.slint";
+
+component FileIcon inherits Image {
+    in property <bool> is-dir;
+    source: root.is-dir ? @image-url("../../../assets/icons/folder.svg") : @image-url("../../../assets/icons/file.svg");
+}
+
+// DragAction ↔ 정수 (0 none · 1 copy · 2 move · 3 link)
+global Act {
+    public pure function to(a: int) -> DragAction {
+        if a == 1 { return DragAction.copy; }
+        if a == 2 { return DragAction.move; }
+        if a == 3 { return DragAction.link; }
+        return DragAction.none;
+    }
+    public pure function code(d: DragAction) -> int {
+        return d == DragAction.copy ? 1 : d == DragAction.move ? 2 : d == DragAction.link ? 3 : 0;
+    }
+}
+
+// 항목 하나의 끌기·클릭. 줄(자세히)과 타일(큰 아이콘)이 같이 쓴다.
+component ItemHit {
+    in property <int> pane;
+    in property <ItemData> item;
+    in property <int> version;
+    in property <bool> drag-enabled;
+    // 끌기 시작 순간의 Shift → move 만, 아니면 copy 만 (계약 §6)
+    in property <bool> drag-shift;
+    out property <bool> hover: ta.has-hover;
+    callback shift(bool);
+    callback press();
+
+    DragArea {
+        data: Bridge.drag-data(root.pane, root.item.pos, root.item.selected, root.version);
+        allow-copy: !root.drag-shift;
+        allow-move: root.drag-shift;
+        enabled: root.drag-enabled;
+        changed dragging => {
+            if self.dragging {
+                Bridge.drag-started(root.pane, self.data, root.drag-shift);
+            }
+        }
+        drag-finished(action) => {
+            Bridge.drag-finished(root.pane, self.data, Act.code(action));
+        }
+        ta := TouchArea {
+            pointer-event(ev) => {
+                if ev.kind == PointerEventKind.down || ev.kind == PointerEventKind.move {
+                    root.shift(ev.modifiers.shift);
+                }
+                if ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left {
+                    root.press();
+                    Bridge.row-down(root.pane, root.item.pos, root.item.selected, ev.modifiers.control, ev.modifiers.shift);
+                }
+            }
+            clicked => {
+                Bridge.row-click(root.pane, root.item.pos);
+            }
+            double-clicked => {
+                Bridge.row-activate(root.pane, root.item.pos);
+            }
+        }
+    }
+}
+
+component DetailsRow inherits Rectangle {
+    in property <int> pane;
+    in property <ItemData> item;
+    in property <int> version;
+    in property <bool> pane-active;
+    in property <int> drop-target;
+    in property <bool> drag-enabled;
+    in property <bool> drag-shift;
+    in property <length> date-w;
+    in property <length> size-w;
+    callback shift(bool);
+    callback press();
+
+    height: Theme.row-h;
+    background: root.item.pos == root.drop-target ? Theme.drop-bg
+        : root.item.selected ? (root.pane-active ? Theme.sel-active : Theme.sel-inactive)
+        : hit.hover ? Theme.hover : transparent;
+    border-width: (root.item.focused && root.pane-active) || root.item.pos == root.drop-target ? 1px : 0px;
+    border-color: Theme.accent;
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px + Theme.scrollbar;
+        spacing: 6px;
+        VerticalLayout {
+            alignment: center;
+            FileIcon {
+                is-dir: root.item.is-dir;
+                width: 16px;
+                height: 16px;
+            }
+        }
+        Text {
+            text: root.item.name;
+            color: Theme.text;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.item.modified;
+            width: root.date-w;
+            color: Theme.text-2;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.item.size;
+            width: root.size-w;
+            color: Theme.text-2;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    hit := ItemHit {
+        width: parent.width;
+        height: parent.height;
+        pane: root.pane;
+        item: root.item;
+        version: root.version;
+        drag-enabled: root.drag-enabled;
+        drag-shift: root.drag-shift;
+        shift(s) => { root.shift(s); }
+        press => { root.press(); }
+    }
+}
+
+component IconTile inherits Rectangle {
+    in property <int> pane;
+    in property <ItemData> item;
+    in property <int> version;
+    in property <bool> pane-active;
+    in property <int> drop-target;
+    in property <bool> drag-enabled;
+    in property <bool> drag-shift;
+    callback shift(bool);
+    callback press();
+
+    width: Theme.tile-w;
+    height: Theme.tile-h;
+    border-radius: 4px;
+    background: root.item.pos == root.drop-target ? Theme.drop-bg
+        : root.item.selected ? (root.pane-active ? Theme.sel-active : Theme.sel-inactive)
+        : hit.hover ? Theme.hover : transparent;
+    border-width: (root.item.focused && root.pane-active) || root.item.pos == root.drop-target ? 1px : 0px;
+    border-color: Theme.accent;
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 6px;
+        alignment: start;
+        HorizontalLayout {
+            alignment: center;
+            FileIcon {
+                is-dir: root.item.is-dir;
+                width: 64px;
+                height: 64px;
+            }
+        }
+        Text {
+            text: root.item.name;
+            color: Theme.text;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+            height: 36px;
+        }
+    }
+
+    hit := ItemHit {
+        width: parent.width;
+        height: parent.height;
+        pane: root.pane;
+        item: root.item;
+        version: root.version;
+        drag-enabled: root.drag-enabled;
+        drag-shift: root.drag-shift;
+        shift(s) => { root.shift(s); }
+        press => { root.press(); }
+    }
+}
+
+// 큰 아이콘 합성 행. 타일 위치는 VM Layout 과 같은 식: x = 간격 + 열 × (타일 + 간격), 행 높이 = 타일 + 간격.
+component IconRowView inherits Rectangle {
+    in property <int> pane;
+    in property <IconRow> cells;
+    in property <int> version;
+    in property <bool> pane-active;
+    in property <int> drop-target;
+    in property <bool> drag-enabled;
+    in property <bool> drag-shift;
+    callback shift(bool);
+    callback press();
+
+    height: Theme.tile-h + Theme.gap;
+    for it[j] in root.cells.items: IconTile {
+        x: Theme.gap + j * (Theme.tile-w + Theme.gap);
+        y: 0;
+        pane: root.pane;
+        item: it;
+        version: root.version;
+        pane-active: root.pane-active;
+        drop-target: root.drop-target;
+        drag-enabled: root.drag-enabled;
+        drag-shift: root.drag-shift;
+        shift(s) => { root.shift(s); }
+        press => { root.press(); }
+    }
+}
+
+component TabButton inherits Rectangle {
+    in property <int> pane;
+    in property <int> idx;
+    in property <string> title;
+    in property <bool> current;
+    in property <bool> pane-active;
+    in property <bool> closable;
+
+    width: Theme.tab-w;
+    height: 30px;
+    border-radius: 6px;
+    background: root.current ? Theme.pane-bg : ta.has-hover ? #e9e9e9 : transparent;
+
+    DragArea {
+        // 탭을 다른 칸 탭 줄로 (끌-7). Qt 는 앱 안 끌기도 OS 끌기로 하므로 글자 짐으로 싣는다.
+        data: Bridge.tab-drag-data(root.pane, root.idx);
+        allow-move: true;
+        ta := TouchArea {
+            clicked => { Bridge.tab-activate(root.pane, root.idx); }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 4px;
+        spacing: 4px;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-weight: root.current ? 600 : 400;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.closable: Rectangle {
+            width: 22px;
+            border-radius: 4px;
+            background: close-ta.has-hover ? #dddddd : transparent;
+            Text {
+                text: "×";
+                color: Theme.text-2;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            close-ta := TouchArea {
+                clicked => { Bridge.tab-close(root.pane, root.idx); }
+            }
+        }
+    }
+    Rectangle {
+        visible: root.current && root.pane-active;
+        y: parent.height - 2px;
+        width: parent.width;
+        height: 2px;
+        background: Theme.accent;
+    }
+}
+
+component HeaderCell inherits Rectangle {
+    in property <int> pane;
+    in property <string> text;
+    in property <int> key;
+    in property <int> sort-key;
+    in property <bool> descending;
+    in property <bool> right;
+
+    HorizontalLayout {
+        spacing: 4px;
+        alignment: root.right ? LayoutAlignment.end : LayoutAlignment.start;
+        Text {
+            text: root.text;
+            font-size: Theme.small;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+        Text {
+            // ▲▼ 는 Roboto 에 없다 → Pretendard 로 직접 지정
+            text: root.sort-key == root.key ? (root.descending ? "▼" : "▲") : "";
+            font-family: "Pretendard";
+            font-size: 9px;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea {
+        clicked => { Bridge.sort(root.pane, root.key); }
+    }
+}
+
+export component Pane inherits Rectangle {
+    in property <int> index;
+    in property <PaneState> state;
+    in property <[ItemData]> details;
+    in property <[IconRow]> icons;
+    in property <[TabData]> tabs;
+    in property <bool> active;
+
+    property <bool> drag-shift;
+    property <bool> rename-open;
+    property <length> date-w: 150px;
+    property <length> size-w: 90px;
+    property <length> row-h: root.state.icons ? Theme.tile-h + Theme.gap : Theme.row-h;
+    // 콘텐츠 좌표 = 목록 안 좌표 + scroll (VM hit 판정에 넘긴다)
+    property <length> scroll: root.state.icons ? -icon-list.content-y : -details-list.content-y;
+    property <string> folder: root.state.folder;
+    // VM 에 미는 뷰포트 (세로 스크롤바는 목록 위에 겹친다 → 그만큼 뺀다)
+    property <length> vp-w: Math.max(0px, body.width - Theme.scrollbar);
+    property <length> vp-h: body.height;
+    property <int> focus-row: root.state.focus < 0 ? -1
+        : root.state.icons ? Math.floor(root.state.focus / Math.max(1, root.state.columns)) : root.state.focus;
+
+    background: Theme.pane-bg;
+
+    init => { Bridge.viewport(root.index, root.vp-w, root.vp-h); }
+    changed vp-w => { Bridge.viewport(root.index, root.vp-w, root.vp-h); }
+    changed vp-h => { Bridge.viewport(root.index, root.vp-w, root.vp-h); }
+    changed folder => {
+        if !addr.has-focus {
+            addr.text = root.folder;
+        }
+    }
+    changed focus-row => { root.keep-focus-visible(); }
+
+    public function focus-list() {
+        sink.focus();
+    }
+    public function focus-address() {
+        addr.focus();
+        addr.select-all();
+    }
+    public function reset-address() {
+        addr.text = root.state.folder;
+    }
+    public function open-rename(name: string, stem: int) {
+        root.rename-open = true;
+        editor.text = name;
+        editor.focus();
+        editor.set-selection-offsets(0, stem);
+    }
+    public function close-rename() {
+        if root.rename-open {
+            root.rename-open = false;
+            if editor.has-focus {
+                sink.focus();
+            }
+        }
+    }
+    public function scroll-to(y: length) {
+        if root.state.icons {
+            icon-list.content-y = -y;
+        } else {
+            details-list.content-y = -y;
+        }
+    }
+    function keep-focus-visible() {
+        if root.focus-row < 0 {
+            return;
+        }
+        let top = root.focus-row * root.row-h;
+        if top < root.scroll {
+            root.scroll-to(top);
+        } else if top + root.row-h > root.scroll + body.height {
+            root.scroll-to(top + root.row-h - body.height);
+        }
+    }
+
+    VerticalLayout {
+        // ── 탭 줄 (탭 + `+`)
+        Rectangle {
+            height: 34px;
+            background: Theme.chrome-bg;
+            HorizontalLayout {
+                padding-left: 4px;
+                padding-top: 4px;
+                spacing: 2px;
+                alignment: start;
+                for tab[i] in root.tabs: TabButton {
+                    pane: root.index;
+                    idx: i;
+                    title: tab.title;
+                    current: i == root.state.active-tab;
+                    pane-active: root.active;
+                    closable: root.tabs.length > 1;
+                }
+                ToolButton {
+                    text: "+";
+                    width: 30px;
+                    clicked => { Bridge.tab-new(root.index); }
+                }
+            }
+            DropArea {
+                can-drop(ev) => {
+                    return Bridge.tab-can-drop(root.index, ev.data) ? DragAction.move : DragAction.none;
+                }
+                dropped(ev) => {
+                    Bridge.tab-dropped(root.index, ev.data, ev.position.x - 4px);
+                    return DragAction.move;
+                }
+            }
+        }
+
+        // ── 도구 줄 (위로 · 새로 고침 · 자세히/큰 아이콘)
+        HorizontalLayout {
+            padding: 4px;
+            spacing: 4px;
+            alignment: start;
+            ToolButton {
+                text: "위로";
+                clicked => { Bridge.go-up(root.index); }
+            }
+            ToolButton {
+                text: "새로 고침";
+                clicked => { Bridge.refresh(root.index); }
+            }
+            Rectangle { width: 8px; }
+            ToolButton {
+                text: "자세히";
+                checked: !root.state.icons;
+                clicked => { Bridge.set-view(root.index, false); }
+            }
+            ToolButton {
+                text: "큰 아이콘";
+                checked: root.state.icons;
+                clicked => { Bridge.set-view(root.index, true); }
+            }
+        }
+
+        // ── 주소줄
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 6px;
+            padding-bottom: 4px;
+            Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: addr.has-focus || root.active ? Theme.accent : Theme.stroke;
+                background: Theme.pane-bg;
+                clip: true;
+                addr := TextInput {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    single-line: true;
+                    color: Theme.text;
+                    text: root.state.folder;
+                    key-pressed(ev) => {
+                        if ev.text == Key.Return {
+                            Bridge.edit-enter(root.index, 1, self.text, self.preedit-text);
+                            return accept;
+                        }
+                        if ev.text == Key.Escape {
+                            Bridge.edit-escape(root.index, 1, self.preedit-text);
+                            return accept;
+                        }
+                        if ev.text == Key.Tab || ev.text == Key.Backtab {
+                            return accept;
+                        }
+                        return reject;
+                    }
+                    changed preedit-text => {
+                        Bridge.edit-preedit(root.index, 1, self.text, self.preedit-text);
+                    }
+                    changed has-focus => {
+                        if self.has-focus {
+                            Bridge.list-focused(root.index);
+                        } else {
+                            Bridge.edit-focus-lost(root.index, 1, self.text);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 자세히 보기 머리글 (머리글 클릭 = 정렬, 같은 열 다시 = 방향 전환)
+        if !root.state.icons: Rectangle {
+            height: 26px;
+            background: Theme.pane-bg;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px + Theme.scrollbar;
+                spacing: 6px;
+                HeaderCell {
+                    pane: root.index;
+                    text: "이름";
+                    key: 0;
+                    sort-key: root.state.sort-key;
+                    descending: root.state.descending;
+                    horizontal-stretch: 1;
+                }
+                HeaderCell {
+                    pane: root.index;
+                    text: "수정한 날짜";
+                    key: 1;
+                    sort-key: root.state.sort-key;
+                    descending: root.state.descending;
+                    width: root.date-w;
+                }
+                HeaderCell {
+                    pane: root.index;
+                    text: "크기";
+                    key: 2;
+                    sort-key: root.state.sort-key;
+                    descending: root.state.descending;
+                    width: root.size-w;
+                    right: true;
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+        }
+
+        // ── 목록
+        body := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            // 빈 곳 클릭 (항목 뒤)
+            TouchArea {
+                pointer-event(ev) => {
+                    if ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left {
+                        sink.focus();
+                        Bridge.empty-click(root.index);
+                    }
+                }
+            }
+            // 목록 포커스 받이. 보이지 않는 TextInput — IME 가 켜진 채로 목록에 한글 조합·확정이 들어오게 한다 (계약 §4·§5).
+            sink := TextInput {
+                x: 0;
+                y: 0;
+                width: 2px;
+                height: Theme.row-h;
+                color: transparent;
+                selection-background-color: transparent;
+                selection-foreground-color: transparent;
+                text-cursor-width: 0px;
+                single-line: true;
+                key-pressed(ev) => {
+                    if Bridge.list-key(root.index, ev.text, ev.modifiers.control, ev.modifiers.shift, ev.modifiers.alt, ev.modifiers.meta) {
+                        return accept;
+                    }
+                    return reject;
+                }
+                edited => {
+                    if self.text != "" {
+                        Bridge.typed(root.index, self.text);
+                        self.text = "";
+                    }
+                }
+                changed preedit-text => {
+                    Bridge.composing(root.index, self.preedit-text);
+                }
+                changed has-focus => {
+                    if self.has-focus {
+                        Bridge.list-focused(root.index);
+                    }
+                }
+            }
+            DropArea {
+                can-drop(ev) => {
+                    return Act.to(Bridge.can-drop(root.index, ev.data, ev.position.x, ev.position.y + root.scroll, Act.code(ev.proposed-action)));
+                }
+                dropped(ev) => {
+                    return Act.to(Bridge.dropped(root.index, ev.data, ev.position.x, ev.position.y + root.scroll, Act.code(ev.proposed-action)));
+                }
+                changed has-drag => {
+                    if !self.has-drag {
+                        Bridge.drop-left(root.index);
+                    }
+                }
+                details-list := ListView {
+                    visible: !root.state.icons;
+                    for item in root.details: DetailsRow {
+                        pane: root.index;
+                        item: item;
+                        version: root.state.version;
+                        pane-active: root.active;
+                        drop-target: root.state.drop-target;
+                        drag-enabled: root.state.renaming < 0;
+                        drag-shift: root.drag-shift;
+                        date-w: root.date-w;
+                        size-w: root.size-w;
+                        shift(s) => { root.drag-shift = s; }
+                        press => { sink.focus(); }
+                    }
+                }
+                icon-list := ListView {
+                    visible: root.state.icons;
+                    for row in root.icons: IconRowView {
+                        pane: root.index;
+                        cells: row;
+                        version: root.state.version;
+                        pane-active: root.active;
+                        drop-target: root.state.drop-target;
+                        drag-enabled: root.state.renaming < 0;
+                        drag-shift: root.drag-shift;
+                        shift(s) => { root.drag-shift = s; }
+                        press => { sink.focus(); }
+                    }
+                }
+            }
+            // 이름 바꾸기 입력칸 — 가상화 목록 줄이 재활용돼도 사라지지 않게 목록 밖에 겹쳐 둔다
+            Rectangle {
+                visible: root.rename-open && root.state.renaming >= 0;
+                property <int> r: root.state.icons ? Math.floor(root.state.renaming / Math.max(1, root.state.columns)) : root.state.renaming;
+                property <int> c: root.state.icons ? Math.mod(root.state.renaming, Math.max(1, root.state.columns)) : 0;
+                x: root.state.icons ? Theme.gap + self.c * (Theme.tile-w + Theme.gap) : 26px;
+                y: root.state.icons ? self.r * root.row-h - root.scroll + 82px : self.r * root.row-h - root.scroll;
+                width: root.state.icons ? Theme.tile-w : Math.max(80px, body.width - 26px - root.date-w - root.size-w - 18px - Theme.scrollbar);
+                height: root.state.icons ? 26px : Theme.row-h;
+                background: Theme.pane-bg;
+                border-width: 1px;
+                border-color: Theme.accent;
+                clip: true;
+                editor := TextInput {
+                    x: 4px;
+                    width: parent.width - 8px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    single-line: true;
+                    color: Theme.text;
+                    enabled: root.rename-open;
+                    key-pressed(ev) => {
+                        if ev.text == Key.Return {
+                            Bridge.edit-enter(root.index, 0, self.text, self.preedit-text);
+                            return accept;
+                        }
+                        if ev.text == Key.Escape {
+                            Bridge.edit-escape(root.index, 0, self.preedit-text);
+                            return accept;
+                        }
+                        if ev.text == Key.Tab || ev.text == Key.Backtab {
+                            return accept;
+                        }
+                        return reject;
+                    }
+                    changed preedit-text => {
+                        Bridge.edit-preedit(root.index, 0, self.text, self.preedit-text);
+                    }
+                    changed has-focus => {
+                        if !self.has-focus && root.rename-open {
+                            Bridge.edit-focus-lost(root.index, 0, self.text);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 상태줄
+        Rectangle {
+            height: 24px;
+            background: Theme.chrome-bg;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                Text {
+                    text: root.state.selected-count > 0 ? root.state.status + "  ·  " + root.state.selected-count + "개 선택" : root.state.status;
+                    font-size: Theme.small;
+                    color: Theme.text-2;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // 포커스된 칸 표시
+    Rectangle {
+        visible: root.active;
+        y: 0;
+        width: parent.width;
+        height: 2px;
+        background: Theme.accent;
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "fd-host"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+fd-core.workspace = true
+fd-viewmodel.workspace = true
+fd-portable.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
