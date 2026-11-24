@@ -22,6 +22,7 @@ let lastCommitAt = -1e9;
 let pressedPane = null;
 let tabPress = null;
 let dragHitBusy = false;
+let coldStartDone = Promise.resolve();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
@@ -39,11 +40,11 @@ function makePane(i) {
     tabsBar: q('.tabs'), tabList: q('.tab-list'), header: q('.header'),
     statusText: q('.status-text'), statusSel: q('.status-sel'),
     btnDetails: q('.view-details'), btnIcons: q('.view-icons'),
-    snap: null, version: -1, cache: new Map(), prev: new Map(), inflight: null,
+    snap: null, version: -1, epoch: 0, cache: new Map(), prev: new Map(), inflight: null,
     pool: [], poolView: null, renderQueued: false, refreshing: false, refreshAgain: false,
     dropPos: null, renameEl: null, renamePos: null, imeGuardUntil: 0,
     sinkComposing: false, sinkCompStarted: false, addrField: null,
-    firstItemPending: false, firstItemWaiter: null, press: null, autoScrolling: false,
+    firstItemPending: false, firstItemWaiters: [], press: null, autoScrolling: false,
     tabsKey: '',
   };
 }
@@ -94,9 +95,12 @@ function applySnap(p, s) {
   const old = p.snap;
   const layoutChanged = !old || s.folder !== old.folder || s.view !== old.view || s.sort !== old.sort
     || s.descending !== old.descending || s.columns !== old.columns || s.activeTab !== old.activeTab;
+  if (layoutChanged) p.epoch += 1; // 폴더·정렬·보기·탭이 바뀌었다 = 옛 줄은 다른 목록의 줄이다
   if (s.version !== p.version || layoutChanged) {
-    // 같은 폴더·같은 배치면 새 줄이 올 때까지 옛 줄을 보여 준다 (클릭할 때마다 깜빡이지 않게)
-    p.prev = layoutChanged ? new Map() : p.cache;
+    // 같은 목록이면 새 줄이 올 때까지 옛 줄을 보여 준다 (클릭할 때마다·배치가 들어올 때마다 비지 않게)
+    if (layoutChanged) p.prev = new Map();
+    else if (p.prev.size + p.cache.size > CACHE_LIMIT) p.prev = new Map(p.cache);
+    else p.prev = new Map([...p.prev, ...p.cache]);
     p.cache = new Map();
     p.version = s.version;
     p.inflight = null;
@@ -253,12 +257,19 @@ function ensureRows(p, first, last) {
   if (p.inflight && p.inflight.version === p.version) return; // 한 번에 하나. 응답이 오면 다시 본다
   const start = Math.max(0, first - OVERSCAN_ITEMS);
   const count = Math.min(2000, last - first + 1 + 2 * OVERSCAN_ITEMS);
-  const req = { start, version: p.version };
+  const req = { start, version: p.version, epoch: p.epoch };
   p.inflight = req;
   invoke('rows', { pane: p.i, start, count })
     .then((rows) => {
       if (p.inflight === req) p.inflight = null;
-      if (req.version !== p.version) { scheduleRender(p); return; } // 그사이 내용이 바뀌었다 — 버리고 다시 받는다
+      if (req.epoch !== p.epoch) { scheduleRender(p); return; } // 다른 목록의 줄 — 버린다
+      if (req.version !== p.version) {
+        // 같은 목록인데 그사이 배치가 더 들어왔다. 버리면 읽는 동안 내내 빈 화면이 된다 (실행 45501987037 의 FirstItem 1025ms).
+        // 보여 주기용(prev)으로 두고 최신 판을 다시 받는다.
+        for (const r of rows) p.prev.set(r.pos, r);
+        renderList(p);
+        return;
+      }
       for (const r of rows) p.cache.set(r.pos, r);
       if (p.cache.size > CACHE_LIMIT) trimCache(p);
       if (!p.autoScrolling) renderList(p);
@@ -274,17 +285,30 @@ function trimCache(p) {
   p.prev = new Map();
 }
 
-// FirstItem: 첫 항목이 들어온 뒤 **그려진 프레임** 까지. rAF 두 번 = 다음 프레임이 화면에 나간 뒤.
+// FirstItem 끝점 = 첫 항목이 들어간 프레임의 **그리기가 끝난 시각** (B 의 AfterRendering 과 같은 정의).
+// DOM 은 이미 바뀌었다 → 다음 rAF 프레임이 그 내용을 그린다 → 그 프레임의 렌더링 단계 뒤에 도는 메시지에서 시각을 잰다.
+// (rAF 두 번은 그다음 프레임 시작까지 재서 최대 한 프레임(16.7ms) 더 길게 나온다 — 두 앱 정의가 어긋난다.)
 function afterFirstPaint(p) {
   const [first] = visibleRange(p);
-  if (!p.cache.has(first)) return;
+  if (!p.cache.has(first) && !p.prev.has(first)) return; // prev 도 같은 목록(epoch)의 줄이다
   p.firstItemPending = false;
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const t = performance.now();
-    const w = p.firstItemWaiter;
-    p.firstItemWaiter = null;
-    if (w) w(t);
-  }));
+  // 기다리는 폴더가 지금 그린 폴더일 때만 깨운다 — 상위 폴더 첫 그림이 큰 폴더 FirstItem 으로 잘못 잡히지 않게
+  const folder = p.snap.folder;
+  const ready = p.firstItemWaiters.filter((w) => w.folder == null || w.folder === folder);
+  p.firstItemWaiters = p.firstItemWaiters.filter((w) => !ready.includes(w));
+  if (!ready.length) return;
+  requestAnimationFrame(() => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      const t = performance.now();
+      for (const w of ready) w.resolve(t);
+    };
+    ch.port2.postMessage(0);
+  });
+}
+
+function waitFirstPaint(p, folder) {
+  return new Promise((resolve) => p.firstItemWaiters.push({ folder, resolve }));
 }
 
 // ------------------------------------------------------------------ 탭
@@ -701,11 +725,12 @@ async function perfAuto() {
   }, PERF_WATCHDOG_MS);
   try {
     await invoke('log_event', { kind: 'perf-method', fields: ['raf-timestamp', 'scroll=rAF·scrollTop', `dpr=${devicePixelRatio}`] });
+    await withTimeout(coldStartDone, 30000, 'ColdStart');
     await waitLoaded(p);
     for (let k = 0; k < cfg.openRepeats; k++) {
       await dispatch(p, { type: 'up' });
       await waitLoaded(p);
-      const painted = new Promise((r) => { p.firstItemWaiter = r; });
+      const painted = waitFirstPaint(p, target);
       const t0 = performance.now();
       await dispatch(p, { type: 'navigate', text: target });
       const t1 = await withTimeout(painted, 30000, 'FirstItem');
@@ -766,8 +791,8 @@ async function main() {
   });
   await listen('os-drag', (ev) => { onOsDrag(ev.payload).catch((e) => console.error(e)); });
 
-  // ColdStart = 프로세스 시작 → 왼쪽 칸 첫 항목이 그려진 프레임
-  panes[0].firstItemWaiter = () => invoke('cold_start');
+  // ColdStart = 프로세스 시작 → 왼쪽 칸 첫 항목이 그려진 프레임 (FirstItem 과 같은 끝점)
+  coldStartDone = waitFirstPaint(panes[0]).then(() => invoke('cold_start'));
   for (const p of panes) {
     await dispatch(p, { type: 'setViewport', width: p.list.clientWidth, height: p.list.clientHeight });
   }

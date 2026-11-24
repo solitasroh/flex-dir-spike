@@ -122,6 +122,11 @@ jobs:
           cp "${{ runner.temp }}"/apps/*.AppImage ~/Downloads/
           chmod +x ~/Downloads/*.AppImage
           ls -la ~/Downloads
+      - name: fd-check.sh 해시 (브라이언 확인표 부록과 같아야 한다)
+        run: cd qa && sha256sum -c SHA256SUMS
+      - name: fd-check.sh gfx — 설치 전 (빈 서버라 실패가 정상, 기록만)
+        run: |
+          if bash qa/fd-check.sh gfx; then echo "gfx: 통과 (이미 다 있음)"; else echo "gfx: 실패 — 위 안내 한 줄 확인"; fi
       - name: 호스트 라이브러리 점검 — 설치 전 (없는 것 = 대표님 기기에 있어야 하는 것)
         run: |
           bash .github/scripts/appimage-deps.sh ~/Downloads/*.AppImage | tee host-libs-before.txt
@@ -137,8 +142,8 @@ jobs:
         run: |
           bash .github/scripts/appimage-deps.sh ~/Downloads/*.AppImage | tee host-libs-after.txt
           if [ -s host-libs-after.txt ]; then echo "::error::아직 없는 라이브러리가 있다"; exit 1; fi
-      - name: fd-check.sh 해시 (브라이언 확인표 부록과 같아야 한다)
-        run: cd qa && sha256sum -c SHA256SUMS
+      - name: fd-check.sh gfx — 설치 후 (통과해야 앱을 띄운다)
+        run: bash qa/fd-check.sh gfx
       - name: prepare
         run: xvfb-run -a -s "-screen 0 1920x1080x24" bash qa/fd-check.sh prepare
       - name: perf A
@@ -199,7 +204,7 @@ jobs:
             echo
             echo "- 시험 앱 A (Tauri 2): \`$(cd rel && ls *tauri*.AppImage)\`"
             echo "- 시험 앱 B (Slint · Qt 백엔드): \`$(cd rel && ls *slint*.AppImage)\`"
-            echo "- \`fd-check.sh\` v2026-11-25.2 (브라이언 확인표 부록의 sha256 과 같다)"
+            echo "- \`fd-check.sh\` v2026-11-25.3 — sha256 \`$(sha256sum rel/fd-check.sh | cut -c1-8)…\` (브라이언 확인표 부록과 같다)"
             echo "- 커밋 ${GITHUB_SHA::7} · 빌드 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo
             echo "## CI 가상 화면에서 fd-check.sh 로 끝까지 돌린 결과"

@@ -141,6 +141,8 @@ def judge(out_dir: Path):
         if ev.exists():
             n = sum(1 for _ in ev.open(encoding="utf-8", errors="replace"))
             print(f"  events.log {n}줄")
+    print("\n  ※ 프레임 측정 방식이 다르다 — A: 웹뷰 프레임 시각(rAF) 간격, B: 앱이 그리는 순간을 직접 잼."
+          "\n    후보별 절대 기준 판정은 그대로, A·B 프레임 수치 직접 비교(결정 규칙 3)는 참고로만 쓴다.")
     print("\n── L3 판정: " + " · ".join(f"{c}={v}" for c, v in verdicts.items()))
     return verdicts
 

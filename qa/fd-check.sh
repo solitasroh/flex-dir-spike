@@ -6,6 +6,7 @@
 #   bash fd-check.sh perf B
 #   bash fd-check.sh open B      시험 앱 B + 파일 관리자 창을 연다 (손으로 확인할 때)
 #   bash fd-check.sh open A
+#   bash fd-check.sh gfx         그래픽 라이브러리만 점검한다 (없으면 설치 명령 한 줄)
 #   bash fd-check.sh collect     결과를 파일 하나로 묶는다 → 슬랙에 올린다
 #   bash fd-check.sh cleanup     시험 폴더를 지운다 (마지막에 한 번)
 #
@@ -23,7 +24,8 @@ DND="$ROOT/끌어놓기"
 IME="$ROOT/한글입력"
 FM_SIDE="$ROOT/파일관리자쪽"
 EXPECTED_BIG=100000
-SCRIPT_VERSION="2026-11-25.2"
+SCRIPT_VERSION="2026-11-25.3"
+OS_RELEASE="${FD_OS_RELEASE:-/etc/os-release}"   # 시험용으로만 바꾼다
 
 say()  { printf '%s\n' "$*"; }
 fail() { printf '\n× %s\n' "$*" >&2; exit 1; }
@@ -61,6 +63,87 @@ run_app() {  # $1=A|B  $2=앱 경로  $3=앞에 붙일 것(환경변수·timeout
   env APPIMAGE_EXTRACT_AND_RUN=1 FD_SPIKE_OUT="$OUT/$which" FD_SPIKE_CANDIDATE="$which" $pre "$app" "$@"
 }
 
+# ── 그래픽 라이브러리 사전 점검 ─────────────────────────────────────
+# AppImage 는 그래픽 드라이버 쪽 라이브러리(GL/EGL/GLES)를 일부러 넣지 않는다 — 기기 드라이버와
+# 맞아야 해서다. 그래서 기기에 없으면 앱이 '종료 코드 127' 로 바로 꺼진다 (CI 실행 45500331519 에서
+# A=libGLESv2.so.2, B=libOpenGL.so.0 으로 실제로 꺼졌다). 실행 전에 미리 보고 설치 명령을 한 줄로 낸다.
+GFX_LIBS=(libGLESv2.so.2 libOpenGL.so.0 libEGL.so.1 libGLX.so.0)
+
+lib_present() {  # 동적 로더가 찾는 곳과 같은 곳을 본다: ld 캐시 + LD_LIBRARY_PATH + 표준 폴더
+  local l="$1" lc d
+  lc=$(command -v ldconfig 2>/dev/null || true)
+  [ -n "$lc" ] || { [ -x /sbin/ldconfig ] && lc=/sbin/ldconfig; }
+  # 캐시를 변수로 먼저 받는다. 'ldconfig -p | grep -q' 는 grep 이 먼저 끝나면 ldconfig 가 SIGPIPE 로
+  # 죽고, pipefail 아래서 '찾았는데 못 찾음' 이 된다.
+  local cache=""
+  [ -n "$lc" ] && cache=$("$lc" -p 2>/dev/null || true)
+  if awk -v l="$l" '$1 == l { f = 1 } END { exit !f }' <<<"$cache"; then return 0; fi
+  local IFS=':'
+  for d in ${LD_LIBRARY_PATH:-} /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /lib64 /usr/lib /lib /usr/lib/aarch64-linux-gnu; do
+    [ -n "$d" ] && [ -e "$d/$l" ] && return 0
+  done
+  return 1
+}
+
+pkg_for() {  # 라이브러리 이름 → 이 배포판의 패키지 이름 (모르면 비움)
+  local l="$1" id=""
+  [ -r "$OS_RELEASE" ] && id=$(. "$OS_RELEASE"; echo "${ID:-} ${ID_LIKE:-}")
+  case "$id" in
+    *debian*|*ubuntu*)
+      case "$l" in libGLESv2.so*) echo libgles2;; libOpenGL.so*) echo libopengl0;; libEGL.so*) echo libegl1;; libGLX.so*) echo libglx0;; libGL.so*) echo libgl1;; esac ;;
+    *fedora*|*rhel*|*centos*)
+      case "$l" in libGLESv2.so*) echo libglvnd-gles;; libOpenGL.so*) echo libglvnd-opengl;; libEGL.so*) echo libglvnd-egl;; libGLX.so*|libGL.so*) echo libglvnd-glx;; esac ;;
+    *arch*)
+      case "$l" in libGLESv2.so*|libOpenGL.so*|libEGL.so*|libGLX.so*|libGL.so*) echo libglvnd;; esac ;;
+    *suse*)
+      case "$l" in libGLESv2.so*) echo libGLESv2-2;; libOpenGL.so*) echo libOpenGL0;; libEGL.so*) echo libEGL1;; libGLX.so*) echo libGLX0;; libGL.so*) echo libGL1;; esac ;;
+  esac
+}
+
+install_line() {  # 라이브러리 이름들 → "sudo apt install …" 한 줄 (이 스크립트는 직접 설치하지 않는다)
+  local id="" pkgs=() unknown=() l p
+  [ -r "$OS_RELEASE" ] && id=$(. "$OS_RELEASE"; echo "${ID:-} ${ID_LIKE:-}")
+  for l in "$@"; do p=$(pkg_for "$l"); if [ -n "$p" ]; then pkgs+=("$p"); else unknown+=("$l"); fi; done
+  local uniq; uniq=$(printf '%s\n' "${pkgs[@]:-}" | awk 'NF && !s[$0]++' | tr '\n' ' ')
+  local cmd="패키지 관리자로 설치:"
+  case "$id" in
+    *debian*|*ubuntu*) cmd="sudo apt install" ;;
+    *fedora*|*rhel*|*centos*) cmd="sudo dnf install" ;;
+    *arch*) cmd="sudo pacman -S" ;;
+    *suse*) cmd="sudo zypper install" ;;
+  esac
+  if [ -n "${uniq// /}" ]; then printf '%s %s' "$cmd" "${uniq% }"; fi
+  if [ "${#unknown[@]}" -gt 0 ]; then printf '%s(이 파일을 주는 패키지: %s)' "${uniq:+ }" "${unknown[*]}"; fi
+}
+
+gfx_missing() { local l; for l in "${GFX_LIBS[@]}"; do lib_present "$l" || printf '%s ' "$l"; done; }
+
+# 실행 전 점검. 없으면 설치 명령 한 줄을 보여 주고 앱을 띄우지 않는다.
+# 점검이 틀렸다고 판단되면 FD_SKIP_GFX_CHECK=1 로 건너뛸 수 있다.
+gfx_gate() {
+  [ "${FD_SKIP_GFX_CHECK:-0}" = 1 ] && return 0
+  local miss; miss=$(gfx_missing)
+  [ -z "$miss" ] && return 0
+  local how
+  # shellcheck disable=SC2086
+  how=$(install_line $miss)
+  if [[ "$how" == sudo* ]]; then
+    say "× 그래픽 라이브러리가 없어 시험 앱이 켜지지 않습니다: ${miss% } → '$how' 를 실행한 뒤 같은 명령을 다시 실행해 주세요."
+  else
+    say "× 그래픽 라이브러리가 없어 시험 앱이 켜지지 않습니다: ${miss% } → 이 파일들을 주는 패키지(보통 mesa·libglvnd)를 설치한 뒤 같은 명령을 다시 실행해 주세요."
+  fi
+  return 1
+}
+
+# 앱이 '공유 라이브러리를 못 찾아' 꺼졌으면 무엇이 없는지 한 줄로 알려 준다.
+explain_crash() {  # $1=앱 출력 파일
+  local miss
+  miss=$(grep -oE 'error while loading shared libraries: [^:]+' "$1" 2>/dev/null | sed 's/.*: //' | sort -u | tr '\n' ' ' || true)
+  # shellcheck disable=SC2086
+  [ -n "$miss" ] && say "  원인: 라이브러리 없음 ${miss% } → $(install_line $miss)"
+  return 0
+}
+
 # ── 기기 정보 ───────────────────────────────────────────────────────
 capture_env() {
   {
@@ -80,6 +163,7 @@ capture_env() {
     echo "test_fs=$(findmnt -no FSTYPE -T "$ROOT" 2>/dev/null || echo ?) $(df -h "$ROOT" | tail -n 1)"
     echo "webkit:"; (ls /usr/lib/*/libwebkit2gtk-4.1.so* /usr/lib/libwebkit2gtk-4.1.so* 2>/dev/null | head -n 2) || echo "  (webkit2gtk-4.1 시스템 라이브러리 없음)"
     echo "qt:"; (ls /usr/lib/*/libQt6Widgets.so* /usr/lib/libQt6Widgets.so* 2>/dev/null | head -n 1) || echo "  (Qt6 시스템 라이브러리 없음)"
+    echo "gfx_missing=$(gfx_missing)"
   } > "$OUT/env.txt" 2>&1
 }
 
@@ -148,6 +232,7 @@ cmd_prepare() {
   say "10만 항목 폴더를 만드는 중입니다 (1분 안팎)…"
   make_big
   say "준비 끝 ($(( $(date +%s) - t0 ))초). 시험 폴더: $ROOT"
+  gfx_gate || say "  (시험 폴더는 만들어 두었습니다. 설치만 하고 다음 단계로 가시면 됩니다.)"
   say "기기 정보 요약:"
   grep -E '^PRETTY_NAME|^session' "$OUT/env.txt" | sed 's/^/  /'
   grep -A1 -E '^(im_process|gpu):' "$OUT/env.txt" | grep -v -E '^(--|im_process:|gpu:)' | sed 's/^ */  /'
@@ -157,6 +242,7 @@ cmd_perf() {
   need_root_dir
   local which="${1:-}"; [ -n "$which" ] || fail "A 또는 B 를 적어 주세요. 예: bash fd-check.sh perf A"
   local app; app=$(find_app "$which")
+  gfx_gate || exit 1
   say "앱이 스스로 큰 폴더를 10번 열고, 두 가지 보기에서 자동으로 스크롤한 뒤 꺼집니다 (2분 안쪽)."
   say "보고만 계시면 됩니다. 멈추거나 하얗게 비는 화면이 보이면 기억해 두세요."
   local rc=0 p="$OUT/$which/perf.log" fi=0 fr=0
@@ -173,9 +259,11 @@ cmd_perf() {
     say "× 시험 앱 $which 이 5분 안에 끝나지 않아 멈췄습니다. 확인표 성-1 에 × 로 적어 주세요."
   elif [ "$rc" -ne 0 ]; then
     say "× 시험 앱 $which 이 오류로 끝났습니다 (종료 코드 $rc). 확인표 성-1 에 × 로 적어 주세요."
+    explain_crash "$OUT/$which/stdout-perf.txt"
   fi
   if [ "$rc" -ne 0 ] || [ "$fi" -lt 10 ] || [ "$fr" -lt 100 ]; then
     say "× 측정 기록이 모자랍니다 (폴더 열기 ${fi}/10, 화면 프레임 ${fr}개). 성-1 에 × 로 적어 주세요."
+    return 1      # 화면에만 × 를 띄우고 0 으로 끝나면 CI 가 통과로 센다 (실행 45500331519 에서 실제로 그랬다)
   else
     say "○ 측정 기록 저장됨 (폴더 열기 ${fi}회, 화면 프레임 ${fr}개). 판정은 브라이언이 합니다."
   fi
@@ -185,6 +273,7 @@ cmd_open() {
   need_root_dir
   local which="${1:-}"; [ -n "$which" ] || fail "A 또는 B 를 적어 주세요. 예: bash fd-check.sh open B"
   local app; app=$(find_app "$which")
+  gfx_gate || exit 1
   make_small                 # 앞 앱이 옮기거나 바꾼 파일을 원래대로 되돌린다
   say "파일 관리자 창(왼쪽에 두세요)과 시험 앱 $which 창이 열립니다."
   say "다 보셨으면 시험 앱 창을 닫으세요. 그러면 이 화면으로 돌아옵니다."
@@ -192,11 +281,15 @@ cmd_open() {
   local rc=0
   mkdir -p "$OUT/$which"
   run_app "$which" "$app" "" "$DND" "$IME" >"$OUT/$which/stdout-open.txt" 2>&1 || rc=$?
-  [ "$rc" -eq 0 ] || say "× 시험 앱 $which 이 오류로 끝났습니다 (종료 코드 $rc). 확인표에 메모해 주세요."
+  if [ "$rc" -ne 0 ]; then
+    say "× 시험 앱 $which 이 오류로 끝났습니다 (종료 코드 $rc). 확인표에 메모해 주세요."
+    explain_crash "$OUT/$which/stdout-open.txt"
+  fi
   echo "exit=$rc" >> "$OUT/$which/stdout-open.txt"
   # 확인 뒤 상태를 남긴다 — 무엇이 어디로 갔는지 브라이언이 로그와 대조한다
   find "$DND" "$IME" "$FM_SIDE" -mindepth 1 | sort > "$OUT/$which/after-open-files.txt"
   say "시험 앱 $which 확인 기록을 저장했습니다."
+  [ "$rc" -eq 0 ]
 }
 
 cmd_collect() {
@@ -220,7 +313,8 @@ case "${1:-}" in
   prepare) cmd_prepare ;;
   perf)    cmd_perf "${2:-}" ;;
   open)    cmd_open "${2:-}" ;;
+  gfx)     if gfx_gate; then say "○ 그래픽 라이브러리 4종 있음 (${GFX_LIBS[*]})"; else exit 1; fi ;;
   collect) cmd_collect ;;
   cleanup) cmd_cleanup ;;
-  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
