@@ -44,7 +44,7 @@ function makePane(i) {
     pool: [], poolView: null, renderQueued: false, refreshing: false, refreshAgain: false,
     dropPos: null, renameEl: null, renamePos: null, imeGuardUntil: 0,
     sinkComposing: false, sinkCompStarted: false, addrField: null,
-    firstItemPending: false, firstItemWaiters: [], press: null, autoScrolling: false,
+    firstItemWaiters: [], press: null, autoScrolling: false,
     tabsKey: '',
   };
 }
@@ -204,7 +204,7 @@ function renderList(p) {
     paintItem(p, it, pos, p.cache.get(pos) || p.prev.get(pos));
   }
   placeRenameEditor(p);
-  if (p.firstItemPending) afterFirstPaint(p);
+  if (p.firstItemWaiters.length) afterFirstPaint(p);
 }
 
 function paintItem(p, it, pos, row) {
@@ -288,11 +288,12 @@ function trimCache(p) {
 // FirstItem 끝점 = 첫 항목이 들어간 프레임의 **그리기가 끝난 시각** (B 의 AfterRendering 과 같은 정의).
 // DOM 은 이미 바뀌었다 → 다음 rAF 프레임이 그 내용을 그린다 → 그 프레임의 렌더링 단계 뒤에 도는 메시지에서 시각을 잰다.
 // (rAF 두 번은 그다음 프레임 시작까지 재서 최대 한 프레임(16.7ms) 더 길게 나온다 — 두 앱 정의가 어긋난다.)
+// 공용 "대기 중" 깃발은 두지 않는다: 깃발을 상위 폴더 그림이 먼저 가져가면 큰 폴더 대기가 영영 안 깨진다
+// (실행 45503193523 — 10회째 FirstItem 30초 초과). 대기마다 폴더를 들고, 그 폴더의 줄이 보일 때만 깬다.
 function afterFirstPaint(p) {
+  if (!p.snap || p.snap.len === 0) return;
   const [first] = visibleRange(p);
   if (!p.cache.has(first) && !p.prev.has(first)) return; // prev 도 같은 목록(epoch)의 줄이다
-  p.firstItemPending = false;
-  // 기다리는 폴더가 지금 그린 폴더일 때만 깨운다 — 상위 폴더 첫 그림이 큰 폴더 FirstItem 으로 잘못 잡히지 않게
   const folder = p.snap.folder;
   const ready = p.firstItemWaiters.filter((w) => w.folder == null || w.folder === folder);
   p.firstItemWaiters = p.firstItemWaiters.filter((w) => !ready.includes(w));
@@ -786,8 +787,7 @@ async function main() {
     if (kind === 'tabs') { refresh(panes[0]); refresh(panes[1]); return; }
     const p = panes[pane];
     if (!p) return;
-    if (kind === 'first-item') p.firstItemPending = true;
-    refresh(p);
+    refresh(p); // first-item 도 다시 읽기 계기일 뿐이다. 끝점 판정은 afterFirstPaint 가 폴더로 한다
   });
   await listen('os-drag', (ev) => { onOsDrag(ev.payload).catch((e) => console.error(e)); });
 
