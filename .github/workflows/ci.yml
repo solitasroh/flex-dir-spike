@@ -106,23 +106,37 @@ jobs:
           if-no-files-found: error
 
   e2e-linux:
-    name: fd-check.sh 끝까지 (Xvfb, 추세용)
+    name: fd-check.sh 끝까지 (Xvfb) — 실패하면 Release 없음
     needs: [tauri-linux, slint-linux]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: appimage-*
           path: ${{ runner.temp }}/apps
           merge-multiple: true
-      - name: 실행 환경 (가상 화면 · 입력기 없음)
+      - name: AppImage 를 다운로드 폴더로
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb xauth libfuse2 libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 x11-xserver-utils
           mkdir -p ~/Downloads
           cp "${{ runner.temp }}"/apps/*.AppImage ~/Downloads/
           chmod +x ~/Downloads/*.AppImage
           ls -la ~/Downloads
+      - name: 호스트 라이브러리 점검 — 설치 전 (없는 것 = 대표님 기기에 있어야 하는 것)
+        run: |
+          bash .github/scripts/appimage-deps.sh ~/Downloads/*.AppImage | tee host-libs-before.txt
+          echo "없는 라이브러리 $(wc -l < host-libs-before.txt)개"
+      - name: 실행 환경 (가상 화면 + 일반 데스크톱에 있는 그래픽·xcb 라이브러리)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libfuse2 x11-xserver-utils dbus-x11 \
+            libgles2 libopengl0 libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri libegl-mesa0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
+      - name: 호스트 라이브러리 점검 — 설치 후 (하나라도 남으면 실패)
+        run: |
+          bash .github/scripts/appimage-deps.sh ~/Downloads/*.AppImage | tee host-libs-after.txt
+          if [ -s host-libs-after.txt ]; then echo "::error::아직 없는 라이브러리가 있다"; exit 1; fi
       - name: fd-check.sh 해시 (브라이언 확인표 부록과 같아야 한다)
         run: cd qa && sha256sum -c SHA256SUMS
       - name: prepare
@@ -130,25 +144,80 @@ jobs:
       - name: perf A
         run: xvfb-run -a -s "-screen 0 1920x1080x24" bash qa/fd-check.sh perf A
       - name: perf B
+        if: always()
         run: xvfb-run -a -s "-screen 0 1920x1080x24" bash qa/fd-check.sh perf B
+      - name: 관문 — 종료 코드 0 · FirstItem 10줄 · 보기마다 프레임 100줄 이상 · 5칸
+        if: always()
+        run: |
+          mkdir -p e2e-summary
+          cp host-libs-before.txt e2e-summary/ || true
+          bash .github/scripts/e2e-gate.sh e2e-summary/e2e-summary.md
       - name: judge (가상 화면 숫자 — 판정 아님)
         if: always()
         run: python3 -I qa/judge.py ~/fd-spike-test/out || true
-      - name: 기록 보기
-        if: always()
-        run: |
-          for c in A B; do
-            echo "=== $c"; tail -n 5 ~/fd-spike-test/out/$c/stdout-perf.txt || true
-            grep -c $'\tFirstItem\t' ~/fd-spike-test/out/$c/perf.log || true
-            grep -c $'\tFrame:' ~/fd-spike-test/out/$c/perf.log || true
-            awk -F'\t' '{print NF}' ~/fd-spike-test/out/$c/perf.log | sort | uniq -c || true
-            cat ~/fd-spike-test/out/$c/events.log | head -n 20 || true
-          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: e2e-out
           path: ~/fd-spike-test/out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-summary
+          path: e2e-summary
+
+  release:
+    name: Release (e2e 관문 통과 후에만)
+    needs: [e2e-linux]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: spike-d1-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: appimage-*
+          path: rel
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-summary
+          path: summary
+      - name: 파일 모으기 · 해시
+        run: |
+          (cd qa && sha256sum -c SHA256SUMS)
+          cp qa/fd-check.sh rel/
+          (cd rel && sha256sum *.AppImage fd-check.sh > SHA256SUMS && cat SHA256SUMS)
+      - name: 릴리스 노트
+        run: |
+          {
+            echo "flex-dir 스파이크 — 11/26(목) 리눅스 확인용 시험 앱 (버리는 코드, 제품 아님)"
+            echo
+            echo "- 시험 앱 A (Tauri 2): \`$(cd rel && ls *tauri*.AppImage)\`"
+            echo "- 시험 앱 B (Slint · Qt 백엔드): \`$(cd rel && ls *slint*.AppImage)\`"
+            echo "- \`fd-check.sh\` v2026-11-25.2 (브라이언 확인표 부록의 sha256 과 같다)"
+            echo "- 커밋 ${GITHUB_SHA::7} · 빌드 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "## CI 가상 화면에서 fd-check.sh 로 끝까지 돌린 결과"
+            echo
+            cat summary/e2e-summary.md
+            echo
+            echo "## 호스트에 있어야 하는 라이브러리 (CI 빈 서버 기준으로 없던 것)"
+            echo
+            echo '```'
+            cat summary/host-libs-before.txt
+            echo '```'
+          } > notes.md
+          cat notes.md
+      - name: 게시 (같은 태그는 새 빌드로 바꾼다)
+        run: |
+          gh release delete "$TAG" -y --cleanup-tag || true
+          gh release create "$TAG" rel/*.AppImage rel/fd-check.sh rel/SHA256SUMS \
+            --prerelease --target "$GITHUB_SHA" --title "D1 리눅스 시험 앱 A·B" --notes-file notes.md
 
   shells-other-os:
     name: 시험 앱 빌드 · ${{ matrix.os }}
